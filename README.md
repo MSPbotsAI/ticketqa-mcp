@@ -17,20 +17,20 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 
 It follows the MSPbots **Vendor MCP Service SOP**: stateless, no stored credentials, per-request header authentication.
 
-### ⚠️ Coverage and verification status
+### Coverage and verification status
 
-The source spec **only fully documents `POST /api/qa/ingest`** (request/response schema, validation rules, idempotency semantics). The other 5 endpoints are mentioned by name and a one-line description only. Two repos were checked (`tqa-gtm`, `app-aiticketqa`) looking for the actual backend implementation to confirm exact field names, but neither contains the `eval_ref`/`schema_version: "2.0"` schema described in the spec — the real backend repo was not found, and this build proceeded from the spec alone per explicit instruction.
+The source spec (`api-qa-ingest.md`) only fully documents `POST /api/qa/ingest`; the other 5 endpoints were originally just a one-line description each. The actual backend repo could not be located (`tqa-gtm` and `app-aiticketqa` were both checked and ruled out), so the initial build proceeded from the spec alone. **Live testing against a real tenant on `agentint.mspbots.ai` (INT) has since confirmed most of the envelope/response shapes** — see below.
 
 | Tool | Coverage |
 |---|---|
-| `ticketqa_ingest_result` | ✅ Fully specified in source doc |
-| `ticketqa_validate_result` | ✅ Fully specified (same envelope as ingest) |
-| `ticketqa_report_error` | ⚠️ Inferred — doc only says "same envelope header fields + failed_stage/error_type/error_message" |
-| `ticketqa_start_run` | ⚠️ Inferred — doc only documents the response shape (`{eval_ref, status}`), not the request body |
-| `ticketqa_get_result` | ⚠️ Inferred — doc only names the endpoint, no query params documented |
-| `ticketqa_get_results` | ⚠️ Inferred — doc only names the endpoint, no query params documented |
+| `ticketqa_validate_result` | ✅ Live-verified (dry-run, same envelope as ingest) |
+| `ticketqa_ingest_result` | ✅ Envelope shape live-verified via `validate` (same schema); the actual write (`/ingest` itself) has not been called |
+| `ticketqa_get_result` | ✅ Live-verified against real ticket data |
+| `ticketqa_get_results` | ✅ Live-verified (`status=fail`, `sort=recent`, `page`, `page_size` confirmed working; full enum of allowed `status`/`sort` values not enumerated) |
+| `ticketqa_report_error` | ⚠️ Still inferred — has write side effects, not tested |
+| `ticketqa_start_run` | ⚠️ Still inferred — triggers a real QA evaluation run (costs an LLM judge call), not tested |
 
-**Verify the 4 ⚠️ tools against a real call before relying on them in production.**
+**⚠️ Critical auth finding from live testing:** the source spec only mentions `Authorization: Bearer <token>`, but the platform's routing layer actually requires the tenant ID as an **`X_Tenant_ID` cookie** (not a header, and undocumented in the spec) to resolve which app to route to — a valid bearer token alone gets `404 {"error": "App not found"}`. This server forwards `X-MSP-Tenant-Id` downstream as that cookie. A `Host` cookie was also observed in a real browser-captured request but tested and confirmed **not required**.
 
 ## Quick Start
 
@@ -65,7 +65,7 @@ Every request to `/mcp` must include the following HTTP headers:
 | Header | 类型 | 是否必填 | 默认值 | 枚举值 | 字段描述 | Example |
 |---|---|---|---|---|---|---|
 | `X-MSP-Token` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-MSP-Token: eyJhbGciOiJFZERTQSJ9...` |
-| `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。按 SOP 要求作为必填鉴权参数接收,但**不转发**给下游 TicketQA App API——该 API 当前是单租户实现(`tenant_code` 恒为 `"default"`)。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
+| `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。**转发给下游 TicketQA App API,但形式是 Cookie `X_Tenant_ID=<value>`,不是 header**——这是平台路由层用来判断请求归属哪个 app/租户的机制,源文档完全没提到,是实测确认的(只带 Bearer token 不带这个 cookie 会返回 `404 App not found`)。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
 | `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | TicketQA App API 所在的 host。本服务会拼接 `/apps/agent-ticket-qa/api/qa/<endpoint>` 得到完整请求地址(与源文档 §4 请求示例的路径一致)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
 
 Missing any of the three headers returns `401 Unauthorized`.
@@ -91,12 +91,12 @@ Connect your MCP client with:
 
 | Tool | 功能 | 参数 |
 |---|---|---|
-| `ticketqa_start_run` | 触发一次工单 QA 评审,拿到 `eval_ref`(⚠️请求体推断,未验证) | `ticket_id`(必填), `trigger?`(dict) |
-| `ticketqa_ingest_result` | 把完成的 QA 评审结果写回(幂等键 `eval_ref`) | `eval_ref`(必填), `ticket`(必填 dict), `rule_results`(必填 list[dict], 1-500 条), `trigger?`(dict) |
-| `ticketqa_report_error` | 上报一次 QA 运行失败(⚠️字段推断,未验证) | `eval_ref`(必填), `failed_stage`(必填), `error_type`(必填), `error_message`(必填), `ticket_id?`, `trigger?`(dict) |
-| `ticketqa_validate_result` | 用同一 envelope 干跑校验,永不写库 | 同 `ticketqa_ingest_result` |
-| `ticketqa_get_result` | 查单条评审结果(⚠️查询参数推断,未验证) | `ticket_id?`, `eval_ref?`(至少给一个) |
-| `ticketqa_get_results` | 查评审结果列表(⚠️查询参数推断,未验证) | `limit?`, `offset?`, `ticket_id?`, `extra_params?`(dict) |
+| `ticketqa_start_run` | 触发一次工单 QA 评审,拿到 `eval_ref`(⚠️请求体推断,未验证,有真实副作用未测试) | `ticket_id`(必填), `trigger?`(dict) |
+| `ticketqa_ingest_result` | 把完成的 QA 评审结果写回(幂等键 `eval_ref`;envelope 已通过 validate 实测确认,写入本身未调用) | `eval_ref`(必填), `ticket`(必填 dict), `rule_results`(必填 list[dict], 1-500 条), `trigger?`(dict) |
+| `ticketqa_report_error` | 上报一次 QA 运行失败(⚠️字段推断,未验证,有写入副作用未测试) | `eval_ref`(必填), `failed_stage`(必填), `error_type`(必填), `error_message`(必填), `ticket_id?`, `trigger?`(dict) |
+| `ticketqa_validate_result` | 用同一 envelope 干跑校验,永不写库(✅ 已实测) | 同 `ticketqa_ingest_result` |
+| `ticketqa_get_result` | 查单条评审结果(✅ 已实测) | `ticket_id?`, `eval_ref?`(至少给一个) |
+| `ticketqa_get_results` | 查评审结果列表(✅ 已实测,`status=fail`/`sort=recent` 确认可用) | `page?`, `page_size?`, `status?`, `sort?`, `extra_params?`(dict) |
 
 `ticket` 对象字段(用于 `ticketqa_ingest_result` / `ticketqa_validate_result`):`ticket_id`(必填 str)、`ticket_oml_level`(必填 int 1-5)、`ticket_pass`(必填 bool,须等于 `ticket_oml_level >= pass_threshold`)、`pass_threshold`(必填 int 2-5)、`evaluated_at`(必填 ISO 时间串);可选 `ticket_data`、`oml_explain`、`coaching_suggestion`、`ticket_content_hash`、`capture_updated_time`。
 
@@ -149,7 +149,7 @@ curl -X POST http://localhost:8080/mcp \
     "jsonrpc": "2.0",
     "id": 1,
     "method": "tools/call",
-    "params": { "name": "ticketqa_get_results", "arguments": { "limit": 10 } }
+    "params": { "name": "ticketqa_get_results", "arguments": { "page": 1, "page_size": 10, "status": "fail" } }
   }'
 ```
 
@@ -160,7 +160,8 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Known Gaps / Implementation Notes
 
-- Only `POST /api/qa/ingest` and `POST /api/qa/validate` (same envelope) are backed by a fully-documented schema. `ticketqa_report_error`, `ticketqa_start_run`, `ticketqa_get_result`, and `ticketqa_get_results` were built from one-line descriptions in the source doc — **field names, requiredness, and response shapes for these 4 are not confirmed against the actual backend** and should be validated against a real call (or the actual backend source, once located) before production use.
-- The actual backend repository implementing `/api/qa/ingest` etc. was not found — `tqa-gtm` (TicketQA GTM/sales-analytics app) and `app-aiticketqa` were both checked and ruled out (neither has the `eval_ref`/`schema_version: "2.0"` schema this spec describes).
-- `X-MSP-Tenant-Id` is accepted and required per the Vendor MCP Service SOP's header-auth contract, but is intentionally **not forwarded** to the downstream API, which is currently single-tenant (`tenant_code` hardcoded to `"default"` per the source doc).
-- Not yet tested against a live TicketQA App API — only protocol-level verification (health check, 401 on missing headers, `tools/list` returning all 6 tools) has been done so far.
+- **Auth mechanism differs from the source spec**: the spec only documents `Authorization: Bearer <token>`. Live testing found the platform's routing layer additionally requires the tenant ID as an `X_Tenant_ID` **cookie** (undocumented) — without it, requests 404 with `{"error": "App not found"}` even with a valid token. Fixed by forwarding `X-MSP-Tenant-Id` as that cookie.
+- `ticketqa_get_results` and `ticketqa_get_result` were originally built from one-line endpoint descriptions and have since been **live-verified** against `agentint.mspbots.ai` — see the coverage table above for the confirmed query params and response shapes.
+- `ticketqa_validate_result`'s envelope (shared with `ticketqa_ingest_result`) has been live-verified via a dry-run call. The actual write path (`POST /api/qa/ingest` itself) has not been called, per the standing policy of not testing endpoints with real side effects without explicit instruction.
+- `ticketqa_report_error` and `ticketqa_start_run` remain **unverified inferences** — both have real side effects (writing an error record; triggering an actual LLM-judge evaluation run) and were not tested. Verify these against a real call before relying on them in production.
+- The actual backend repository implementing `/api/qa/ingest` etc. was not found in GitHub — `tqa-gtm` (TicketQA GTM/sales-analytics app) and `app-aiticketqa` were both checked and ruled out (neither has the `eval_ref`/`schema_version: "2.0"` schema this spec describes). Live testing against the deployed API on `agentint.mspbots.ai` was used instead to confirm behavior.

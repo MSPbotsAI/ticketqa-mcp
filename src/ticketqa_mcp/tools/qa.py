@@ -18,6 +18,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
     ) -> str:
         """Write a completed QA evaluation for one ticket to the App data store.
 
+        Envelope schema confirmed live via ticketqa_validate_result (same
+        shape, dry-run) against a real tenant; POST /api/qa/ingest itself
+        (the actual write) has not been called directly.
+
         API: POST /api/qa/ingest (schema_version 2.0). Idempotent on eval_ref:
         re-posting the same eval_ref replaces that evaluation's rule_results
         in place (evaluation_version unchanged); a new eval_ref for the same
@@ -69,6 +73,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
         trigger: dict[str, object] | None = None,
     ) -> str:
         """Dry-run validate a QA evaluation envelope without writing anything.
+
+        ✅ Verified live against a real tenant — returns
+        {"ok": true, "dry_run": true, "eval_ref": ..., "counts": {...},
+        "warnings": []} on success.
 
         API: POST /api/qa/validate — accepts the exact same envelope shape as
         ticketqa_ingest_result and returns the same success/validation-error
@@ -187,11 +195,14 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
     ) -> str:
         """Get a single QA result (with its rule_results) by ticket or eval_ref.
 
-        ⚠️ INFERRED SCHEMA — the source spec only names this endpoint
-        (GET /api/qa/result) without documenting its query parameters. This
-        tool assumes lookup by ticket_id and/or eval_ref, matching the fields
-        used as lookup keys elsewhere in the spec. Verify against a real call
-        before relying on this in production.
+        ✅ Verified live against a real tenant. Response shape:
+        {"ok": true, "status": "done", "result": {eval_ref, ticket_id,
+        evaluation_version, evaluated_at, ticket_oml_level, ticket_pass,
+        pass_threshold, oml_explain, coaching_suggestion, rubric_version,
+        judge_model, psa, trigger_source, triggered_by, filter_id,
+        ticket_data, rule_results: [...]}}. With neither ticket_id nor
+        eval_ref: 400 {"ok": false, "code": "invalid_input", "message":
+        "Provide either eval_ref or ticket_id"}.
 
         API: GET /api/qa/result
 
@@ -213,36 +224,41 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
 
     @mcp.tool()
     async def ticketqa_get_results(
-        limit: int | None = None,
-        offset: int | None = None,
-        ticket_id: str | None = None,
+        page: int | None = None,
+        page_size: int | None = None,
+        status: str | None = None,
+        sort: str | None = None,
         extra_params: dict[str, object] | None = None,
     ) -> str:
         """List QA results, optionally filtered/paginated.
 
-        ⚠️ INFERRED SCHEMA — the source spec only names this endpoint
-        (GET /api/qa/results) without documenting its query parameters. This
-        tool assumes common pagination (limit/offset) plus a ticket_id
-        filter. Verify against a real call before relying on this in
-        production.
+        ✅ Verified live against a real tenant with status="fail", sort="recent".
+        Response shape: {"ok": true, "count": N, "page": N, "page_size": N,
+        "data": [{id, ticket_id, evaluation_version, evaluated_at,
+        ticket_oml_level, ticket_pass, pass_threshold, summary, psa}, ...]}.
+        The full set of allowed `status`/`sort` enum values was not
+        enumerated — only "fail" and "recent" were confirmed to work.
 
         API: GET /api/qa/results
 
         Args:
-            limit: Optional max number of results to return.
-            offset: Optional pagination offset.
-            ticket_id: Optional filter by ticket ID.
+            page: Optional page number (1-based, confirmed working).
+            page_size: Optional page size (confirmed working).
+            status: Optional filter, e.g. "fail" (confirmed working); other
+                values (e.g. "pass") not tested.
+            sort: Optional sort order, e.g. "recent" (confirmed working);
+                other values not tested.
             extra_params: Additional raw query params, in case the real API
-                supports filters not modeled here (e.g. date range, oml_level,
-                ticket_pass).
+                supports filters not modeled here.
         """
         client = client_factory()
         if client is None:
             return NO_TOKEN
         params = {
-            "limit": limit,
-            "offset": offset,
-            "ticket_id": ticket_id,
+            "page": page,
+            "page_size": page_size,
+            "status": status,
+            "sort": sort,
             **(extra_params or {}),
         }
         try:

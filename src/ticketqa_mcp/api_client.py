@@ -16,10 +16,20 @@ class TicketQAError(Exception):
 
 
 class TicketQAClient:
-    """Async httpx client wrapping the MSPbots TicketQA Data Store API."""
+    """Async httpx client wrapping the MSPbots TicketQA Data Store API.
 
-    def __init__(self, access_token: str, host: str):
+    The platform's routing layer resolves which tenant/app a request belongs
+    to via an `X_Tenant_ID` cookie — this is undocumented in the source spec
+    (api-qa-ingest.md only mentions the Authorization bearer header) and was
+    confirmed empirically: requests with only the Authorization header get
+    404 {"error": "App not found"}; adding the X_Tenant_ID cookie makes them
+    succeed. A `Host` cookie was also observed in a real browser request but
+    tested unnecessary — omitted here.
+    """
+
+    def __init__(self, access_token: str, host: str, tenant_id: str):
         self._token = access_token
+        self._tenant_id = tenant_id
         self._base_url = host.rstrip("/") + _API_PREFIX
 
     def _headers(self) -> dict[str, str]:
@@ -28,6 +38,9 @@ class TicketQAClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+    def _cookies(self) -> dict[str, str]:
+        return {"X_Tenant_ID": self._tenant_id}
 
     def _clean_params(self, params: dict | None) -> dict:
         if not params:
@@ -38,7 +51,10 @@ class TicketQAClient:
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 resp = await client.get(
-                    f"{self._base_url}{path}", headers=self._headers(), params=self._clean_params(params)
+                    f"{self._base_url}{path}",
+                    headers=self._headers(),
+                    cookies=self._cookies(),
+                    params=self._clean_params(params),
                 )
             except httpx.RequestError as e:
                 raise TicketQAError(0, None, f"{e or type(e).__name__} (url={self._base_url}{path})") from e
@@ -47,7 +63,12 @@ class TicketQAClient:
     async def post(self, path: str, json_body: Any) -> Any:
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:
-                resp = await client.post(f"{self._base_url}{path}", headers=self._headers(), json=json_body)
+                resp = await client.post(
+                    f"{self._base_url}{path}",
+                    headers=self._headers(),
+                    cookies=self._cookies(),
+                    json=json_body,
+                )
             except httpx.RequestError as e:
                 raise TicketQAError(0, None, f"{e or type(e).__name__} (url={self._base_url}{path})") from e
             return self._handle(resp)
