@@ -19,12 +19,10 @@ class TicketQAClient:
     """Async httpx client wrapping the MSPbots TicketQA Data Store API.
 
     The platform's routing layer resolves which tenant/app a request belongs
-    to via an `X_Tenant_ID` cookie — this is undocumented in the source spec
-    (api-qa-ingest.md only mentions the Authorization bearer header) and was
-    confirmed empirically: requests with only the Authorization header get
-    404 {"error": "App not found"}; adding the X_Tenant_ID cookie makes them
-    succeed. A `Host` cookie was also observed in a real browser request but
-    tested unnecessary — omitted here.
+    to via an `X_Tenant_ID` HTTP header — this is undocumented in the source
+    spec (api-qa-ingest.md only mentions the Authorization bearer header) and
+    was confirmed empirically: requests with only the Authorization header
+    get 404 {"error": "App not found"}; adding X_Tenant_ID makes them succeed.
     """
 
     def __init__(self, access_token: str, host: str, tenant_id: str):
@@ -35,12 +33,10 @@ class TicketQAClient:
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._token}",
+            "X_Tenant_ID": self._tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-
-    def _cookies(self) -> dict[str, str]:
-        return {"X_Tenant_ID": self._tenant_id}
 
     def _clean_params(self, params: dict | None) -> dict:
         if not params:
@@ -53,7 +49,6 @@ class TicketQAClient:
                 resp = await client.get(
                     f"{self._base_url}{path}",
                     headers=self._headers(),
-                    cookies=self._cookies(),
                     params=self._clean_params(params),
                 )
             except httpx.RequestError as e:
@@ -66,7 +61,6 @@ class TicketQAClient:
                 resp = await client.post(
                     f"{self._base_url}{path}",
                     headers=self._headers(),
-                    cookies=self._cookies(),
                     json=json_body,
                 )
             except httpx.RequestError as e:

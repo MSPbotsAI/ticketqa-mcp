@@ -30,7 +30,7 @@ The source spec (`api-qa-ingest.md`) only fully documents `POST /api/qa/ingest`;
 | `ticketqa_report_error` | ⚠️ Still inferred — has write side effects, not tested |
 | `ticketqa_start_run` | ⚠️ Still inferred — triggers a real QA evaluation run (costs an LLM judge call), not tested |
 
-**⚠️ Critical auth finding from live testing:** the source spec only mentions `Authorization: Bearer <token>`, but the platform's routing layer actually requires the tenant ID as an **`X_Tenant_ID` cookie** (not a header, and undocumented in the spec) to resolve which app to route to — a valid bearer token alone gets `404 {"error": "App not found"}`. This server forwards `X-MSP-Tenant-Id` downstream as that cookie. A `Host` cookie was also observed in a real browser-captured request but tested and confirmed **not required**.
+**⚠️ Auth finding from live testing:** the source spec only mentions `Authorization: Bearer <token>`, but the platform's routing layer actually requires the tenant ID as an additional **`X_Tenant_ID` HTTP header** (undocumented in the spec) to resolve which app to route to — a valid bearer token alone gets `404 {"error": "App not found"}`. This server forwards `X-MSP-Tenant-Id` downstream as that header.
 
 ## Quick Start
 
@@ -65,7 +65,7 @@ Every request to `/mcp` must include the following HTTP headers:
 | Header | 类型 | 是否必填 | 默认值 | 枚举值 | 字段描述 | Example |
 |---|---|---|---|---|---|---|
 | `X-MSP-Token` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-MSP-Token: eyJhbGciOiJFZERTQSJ9...` |
-| `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。**转发给下游 TicketQA App API,但形式是 Cookie `X_Tenant_ID=<value>`,不是 header**——这是平台路由层用来判断请求归属哪个 app/租户的机制,源文档完全没提到,是实测确认的(只带 Bearer token 不带这个 cookie 会返回 `404 App not found`)。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
+| `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。转发给下游 TicketQA App API 时改名为 `X_Tenant_ID` header——这是平台路由层用来判断请求归属哪个 app/租户的机制,源文档完全没提到,是实测确认的(只带 Bearer token 不带这个 header 会返回 `404 App not found`)。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
 | `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | TicketQA App API 所在的 host。本服务会拼接 `/apps/agent-ticket-qa/api/qa/<endpoint>` 得到完整请求地址(与源文档 §4 请求示例的路径一致)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
 
 Missing any of the three headers returns `401 Unauthorized`.
@@ -160,7 +160,7 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Known Gaps / Implementation Notes
 
-- **Auth mechanism differs from the source spec**: the spec only documents `Authorization: Bearer <token>`. Live testing found the platform's routing layer additionally requires the tenant ID as an `X_Tenant_ID` **cookie** (undocumented) — without it, requests 404 with `{"error": "App not found"}` even with a valid token. Fixed by forwarding `X-MSP-Tenant-Id` as that cookie.
+- **Auth mechanism differs from the source spec**: the spec only documents `Authorization: Bearer <token>`. Live testing found the platform's routing layer additionally requires the tenant ID as an `X_Tenant_ID` **HTTP header** (undocumented) — without it, requests 404 with `{"error": "App not found"}` even with a valid token. Fixed by forwarding `X-MSP-Tenant-Id` as that header.
 - `ticketqa_get_results` and `ticketqa_get_result` were originally built from one-line endpoint descriptions and have since been **live-verified** against `agentint.mspbots.ai` — see the coverage table above for the confirmed query params and response shapes.
 - `ticketqa_validate_result`'s envelope (shared with `ticketqa_ingest_result`) has been live-verified via a dry-run call. The actual write path (`POST /api/qa/ingest` itself) has not been called, per the standing policy of not testing endpoints with real side effects without explicit instruction.
 - `ticketqa_report_error` and `ticketqa_start_run` remain **unverified inferences** — both have real side effects (writing an error record; triggering an actual LLM-judge evaluation run) and were not tested. Verify these against a real call before relying on them in production.
