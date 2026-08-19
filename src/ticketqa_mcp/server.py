@@ -89,6 +89,28 @@ def create_mcp_server(settings: Settings) -> FastMCP:
     # correctly behind a reverse proxy or docker network.
     mcp = FastMCP(
         name="ticketqa-mcp",
+        instructions=(
+            "MSPbots TicketQA is the platform's automated PSA-ticket "
+            "quality-assurance scoring feature (\"Agent Ticket QA\"). An AI QA "
+            "agent evaluates a closed support ticket against a rules rubric "
+            "(per-domain checks such as responsiveness, documentation, "
+            "communication) and this server writes that evaluation back to "
+            "the platform's qa_results/rule_results tables, or reads it back "
+            "later for reporting and coaching.\n\n"
+            "Core concepts: eval_ref (idempotency key linking one "
+            "evaluation's run -> ingest/error -> result lookup), "
+            "ticket_oml_level (1-5 Operational Maturity Level) plus "
+            "pass_threshold and ticket_pass (the overall verdict), "
+            "rule_results (per-rule pass/fail findings, 1-500 entries per "
+            "evaluation).\n\n"
+            "Typical flow: ticketqa_start_run(ticket_id) to kick off scoring "
+            "and obtain an eval_ref; ticketqa_validate_result to dry-run "
+            "check an envelope before writing anything; "
+            "ticketqa_ingest_result to persist the finished evaluation "
+            "(idempotent on eval_ref); ticketqa_report_error if scoring "
+            "failed partway. Use ticketqa_get_result / ticketqa_get_results "
+            "to read evaluations back. PSA sources: ConnectWise, Autotask."
+        ),
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 

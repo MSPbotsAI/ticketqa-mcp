@@ -53,7 +53,7 @@ python -m ticketqa_mcp
 
 ```bash
 curl http://localhost:8080/health
-# {"status": "ok", "service": "ticketqa-mcp", "transport": "http"}
+# {"status": "ok"}
 ```
 
 No credentials are required for the health endpoint.
