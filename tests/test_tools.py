@@ -90,6 +90,25 @@ async def test_tools_list_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_writeback_action_type_and_status_are_real_enums():
+    # A blind tool-selection test (no build context, schema only) flagged
+    # that action_type/status looked like free text with the fixed values
+    # only documented in prose — confirmed true, and inconsistent with this
+    # fleet's own convention (Literal[...] for other fixed-value fields, e.g.
+    # easydmarc-mcp's sort `direction`). Fixed to a real JSON-schema enum so
+    # a client validates it rather than guessing a string.
+    mcp = create_mcp_server(Settings())
+    tools = await mcp.list_tools()
+    schema = next(t for t in tools if t.name == "qa_report_writeback").inputSchema
+    assert set(schema["properties"]["action_type"]["enum"]) == {
+        "write_note",
+        "update_field",
+        "send_alert",
+    }
+    assert set(schema["properties"]["status"]["enum"]) == {"success", "failed", "skipped"}
+
+
+@pytest.mark.asyncio
 async def test_service_instructions_present_and_bounded():
     mcp = create_mcp_server(Settings())
     assert mcp.instructions

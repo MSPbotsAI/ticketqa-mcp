@@ -8,7 +8,7 @@ lifecycle description surfaced to the calling agent.
 """
 
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -269,11 +269,12 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
     async def qa_report_writeback(
         eval_ref: Annotated[str, Field(description=_EVAL_REF_DESC)],
         action_type: Annotated[
-            str,
-            Field(description='Required — one of "write_note", "update_field", "send_alert".'),
+            Literal["write_note", "update_field", "send_alert"],
+            Field(description="What kind of external action this reports."),
         ],
         status: Annotated[
-            str, Field(description='Required — one of "success", "failed", "skipped".')
+            Literal["success", "failed", "skipped"],
+            Field(description="How the action turned out."),
         ],
         action_ref: Annotated[
             str | None,
