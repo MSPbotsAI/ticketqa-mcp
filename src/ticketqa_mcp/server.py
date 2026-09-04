@@ -16,8 +16,8 @@ from .config import Settings
 # Value is (access_token, host, tenant_id). tenant_id IS forwarded to the
 # downstream App API — as an X_Tenant_ID header. This was confirmed
 # empirically: the platform's routing layer 404s ("App not found") without
-# it, even with a valid bearer token. Not documented in the source spec
-# (api-qa-ingest.md), which only mentions the Authorization header.
+# it, even with a valid bearer token. Not documented in the App's own spec
+# (qa-api-spec.md v1.0 §1.2), which only mentions the Authorization header.
 _gateway_creds_var: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
     "ticketqa_gateway_creds", default=None
 )
@@ -90,26 +90,28 @@ def create_mcp_server(settings: Settings) -> FastMCP:
     mcp = FastMCP(
         name="ticketqa-mcp",
         instructions=(
-            "MSPbots TicketQA is the platform's automated PSA-ticket "
-            "quality-assurance scoring feature (\"Agent Ticket QA\"). An AI QA "
-            "agent evaluates a closed support ticket against a rules rubric "
-            "(per-domain checks such as responsiveness, documentation, "
-            "communication) and this server writes that evaluation back to "
-            "the platform's qa_results/rule_results tables, or reads it back "
-            "later for reporting and coaching.\n\n"
-            "Core concepts: eval_ref (idempotency key linking one "
-            "evaluation's run -> ingest/error -> result lookup), "
-            "ticket_oml_level (1-5 Operational Maturity Level) plus "
-            "pass_threshold and ticket_pass (the overall verdict), "
-            "rule_results (per-rule pass/fail findings, 1-500 entries per "
-            "evaluation).\n\n"
-            "Typical flow: ticketqa_start_run(ticket_id) to kick off scoring "
-            "and obtain an eval_ref; ticketqa_validate_result to dry-run "
-            "check an envelope before writing anything; "
-            "ticketqa_ingest_result to persist the finished evaluation "
-            "(idempotent on eval_ref); ticketqa_report_error if scoring "
-            "failed partway. Use ticketqa_get_result / ticketqa_get_results "
-            "to read evaluations back. PSA sources: ConnectWise, Autotask."
+            "MSPbots Agent Ticket QA scores a closed PSA ticket against a "
+            "rules rubric. The App orchestrates the whole evaluation as a "
+            "stage machine (assemble -> judging, once per domain -> summary "
+            "-> archived) and drives it turn by turn; this server is only "
+            "ever called from inside one such turn — it never advances the "
+            "stage itself, that always happens on the App's own next turn. "
+            "eval_ref (from the turn message's [qa_ref] marker) links every "
+            "call in one evaluation.\n\n"
+            "Turn flow: qa_store_ticket_data once in the assemble turn; "
+            "qa_store_domain_results once per domain in each judging turn "
+            "(qa_get_ticket_data to re-read the snapshot as evidence); "
+            "qa_store_summary once, after every domain is stored, which "
+            "also archives the evaluation in the same call. If a turn hits "
+            "an unrecoverable failure, call qa_report_turn_error and stop — "
+            "never keep going or call another pipeline tool after it. Once "
+            "archived, a later turn may ask for external actions (a PSA "
+            "note, a field update, an alert) — report every one of them "
+            "with qa_report_writeback, including a status=\"skipped\" "
+            "report when you deliberately don't act.\n\n"
+            "qa_get_ruleset is unrelated to all of the above — it's a "
+            "live, uncached rule lookup for conversational/preview scoring "
+            "outside a real App-driven evaluation only."
         ),
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
         stateless_http=True,
@@ -118,8 +120,9 @@ def create_mcp_server(settings: Settings) -> FastMCP:
 
     client_factory: Callable[[], TicketQAClient | None] = lambda: get_client_from_context(settings)
 
-    from .tools import qa
+    from .tools import pipeline, ruleset
 
-    qa.register(mcp, client_factory)
+    pipeline.register(mcp, client_factory)
+    ruleset.register(mcp, client_factory)
 
     return mcp

@@ -5,10 +5,13 @@ import httpx
 
 from ._json import error_envelope
 
-# The App API is only reachable at this path prefix (see api-qa-ingest.md §4):
-# "https://<host>/apps/agent-ticket-qa/api/qa/<endpoint>". Do not hardcode this
-# prefix elsewhere — X-MSP-Host only carries the bare host.
-_API_PREFIX = "/apps/agent-ticket-qa/api/qa"
+# Six of the seven endpoints live under .../api/qa/<endpoint>; the seventh
+# (read-only ruleset) deliberately lives under .../api/criteria instead — it
+# shares that path with the page's own Criteria tab, not the qa/* family. See
+# qa-api-spec.md v1.0 §3.7: "路径前缀是 /api/criteria 而不是 /api/qa". Do not
+# hardcode either prefix elsewhere — X-MSP-Host only carries the bare host.
+_QA_PREFIX = "/apps/agent-ticket-qa/api/qa"
+_CRITERIA_PREFIX = "/apps/agent-ticket-qa/api/criteria"
 
 _TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -31,15 +34,20 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 # status_code -> (error code, retryable). status_code 0 means a network/
-# connection-level failure (no response at all).
+# connection-level failure (no response at all). Table matches qa-api-spec.md
+# v1.0 §2 exactly: 401 unauthorized, 404 eval_not_found, 409 invalid_stage /
+# evaluation_closed, 400 validation_failed, 413 payload_too_large, 500
+# internal_error. The API's own `error.code` string (e.g. "invalid_stage") is
+# carried separately on TicketQAError.code — this table only maps the HTTP
+# status to this fleet's fixed envelope vocabulary.
 _STATUS_TO_CODE: dict[int, tuple[str, bool]] = {
     0: ("upstream_error", True),
     400: ("invalid_argument", False),
     401: ("unauthorized", False),
     403: ("unauthorized", False),
     404: ("not_found", False),
+    409: ("invalid_argument", False),
     413: ("invalid_argument", False),
-    422: ("invalid_argument", False),
     429: ("rate_limited", True),
 }
 
@@ -53,30 +61,43 @@ def _classify(status_code: int) -> tuple[str, bool]:
 
 
 class TicketQAError(Exception):
-    def __init__(self, status_code: int, code: str | None, message: str):
+    def __init__(
+        self, status_code: int, code: str | None, message: str, details: list | None = None
+    ):
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.details = details
         super().__init__(f"TicketQA API error {status_code} ({code}): {message}")
 
     def to_envelope(self) -> str:
         envelope_code, retryable = _classify(self.status_code)
-        # self.code is the TicketQA API's own domain error code (e.g.
-        # "validation_failed", "duplicate_rule", "unsupported_schema_version"),
-        # distinct from the SOP's fixed vocabulary in envelope_code — surface
-        # both when available.
+        # self.code is the App's own domain error code (e.g. "invalid_stage",
+        # "eval_not_found"), distinct from the SOP's fixed vocabulary in
+        # envelope_code — surface both. `details` is the field-level error
+        # list qa-api-spec.md v1.0 §1.4/§4 says must be passed through
+        # verbatim ("skill 依赖它在同一回合内自纠重试" — swallowing it means
+        # the model can't self-correct), so it's appended rather than dropped.
         message = f"[{self.code}] {self.message}" if self.code else self.message
+        if self.details:
+            message = f"{message} | details={self.details}"
         return error_envelope(envelope_code, message, retryable)
 
 
 class TicketQAClient:
-    """Async httpx client wrapping the MSPbots TicketQA Data Store API.
+    """Async httpx client wrapping the agent-ticketqa App's QA data API
+    (qa-api-spec.md v1.0).
 
-    The platform's routing layer resolves which tenant/app a request belongs
-    to via an `X_Tenant_ID` HTTP header — this is undocumented in the source
-    spec (api-qa-ingest.md only mentions the Authorization bearer header) and
-    was confirmed empirically: requests with only the Authorization header
-    get 404 {"error": "App not found"}; adding X_Tenant_ID makes them succeed.
+    The platform's routing layer resolves which tenant/app instance a
+    request belongs to via an `X_Tenant_ID` HTTP header. This is separate
+    from — and not mentioned by — the App's own documented auth (v1.0 §1.2
+    says plainly "no special auth: no MCP token, no write token, no
+    signature header, just the same bearer JWT as the webpage"); it's this
+    platform's own gateway-routing concern, confirmed empirically on the
+    prior build of this server (requests with only the Authorization header
+    got 404 {"error": "App not found"}; adding X_Tenant_ID fixed it) and
+    carried forward here since it's the same App/platform, not re-verified
+    against these specific new endpoints — see README Known Gaps.
 
     Reuses the module-level connection pool (see _get_http_client) across
     every call made through this instance, rather than opening a new
@@ -86,7 +107,7 @@ class TicketQAClient:
     def __init__(self, access_token: str, host: str, tenant_id: str):
         self._token = access_token
         self._tenant_id = tenant_id
-        self._base_url = host.rstrip("/") + _API_PREFIX
+        self._host = host.rstrip("/")
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -101,17 +122,21 @@ class TicketQAClient:
             return {}
         return {k: v for k, v in params.items() if v is not None}
 
-    async def get(self, path: str, params: dict | None = None) -> Any:
-        return await self._request("GET", path, params=self._clean_params(params))
+    async def qa_get(self, path: str, params: dict | None = None) -> Any:
+        return await self._request(
+            "GET", f"{self._host}{_QA_PREFIX}{path}", params=self._clean_params(params)
+        )
 
-    async def post(self, path: str, json_body: Any = None) -> Any:
-        return await self._request("POST", path, json_body=json_body)
+    async def qa_post(self, path: str, json_body: Any = None) -> Any:
+        return await self._request("POST", f"{self._host}{_QA_PREFIX}{path}", json_body=json_body)
+
+    async def criteria_get(self) -> Any:
+        return await self._request("GET", f"{self._host}{_CRITERIA_PREFIX}")
 
     async def _request(
-        self, method: str, path: str, params: dict | None = None, json_body: Any = None
+        self, method: str, url: str, params: dict | None = None, json_body: Any = None
     ) -> Any:
         client = _get_http_client()
-        url = f"{self._base_url}{path}"
         headers = self._headers()
 
         last_exc: Exception | None = None
@@ -154,11 +179,38 @@ class TicketQAClient:
             body = resp.json()
         except ValueError:
             body = {"raw_response": resp.text}
+
+        # qa-api-spec.md v1.0 §1.4: success/failure is judged by the
+        # `success` field, and HTTP status always agrees with it — but check
+        # both, since a raw_response fallback (non-JSON body) has neither.
+        if isinstance(body, dict) and "success" in body:
+            if body.get("success") is False:
+                err = body.get("error") or {}
+                raise TicketQAError(
+                    resp.status_code,
+                    err.get("code"),
+                    err.get("message") or "unknown error",
+                    err.get("details"),
+                )
+            if resp.status_code >= 400:
+                # success:true but a 4xx/5xx status would itself violate the
+                # spec's own invariant — surface it rather than silently
+                # trusting the body.
+                raise TicketQAError(resp.status_code, None, "response body claims success but HTTP status is an error")
+            return body.get("data")
+
         if resp.status_code >= 400:
-            code = body.get("code") if isinstance(body, dict) else None
-            message = body.get("message") if isinstance(body, dict) else str(body)
-            errors = body.get("errors") if isinstance(body, dict) else None
-            if errors:
-                message = f"{message} | errors={errors}"
-            raise TicketQAError(resp.status_code, code, message or "unknown error")
+            # Confirmed live (2026-09-04, dummy tenant against a real INT
+            # host): a routing-layer failure — the request never reached the
+            # App at all — comes back as this platform gateway's own flat
+            # {"error": "<string>"} shape, not qa-api-spec.md's envelope
+            # (that spec only describes what the App itself returns once
+            # routing succeeds). Check both keys rather than only the
+            # documented one, or a real "App not found" collapses to a
+            # useless "unknown error".
+            if isinstance(body, dict):
+                message = body.get("message") or body.get("error")
+            else:
+                message = str(body)
+            raise TicketQAError(resp.status_code, None, message or "unknown error")
         return body
