@@ -10,8 +10,8 @@ from ._json import error_envelope
 # shares that path with the page's own Criteria tab, not the qa/* family. See
 # qa-api-spec.md v1.1 §3.7: "路径前缀是 /api/criteria 而不是 /api/qa". Do not
 # hardcode either prefix elsewhere — X-MSP-Host only carries the bare host.
-_QA_PREFIX = "/apps/agent-ticket-qa/api/qa"
-_CRITERIA_PREFIX = "/apps/agent-ticket-qa/api/criteria"
+_QA_PREFIX = "/apps/agent-ticketqa/api/qa"
+_CRITERIA_PREFIX = "/apps/agent-ticketqa/api/criteria"
 
 _TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -93,11 +93,13 @@ class TicketQAClient:
     from — and not mentioned by — the App's own documented auth (v1.1 §1.2
     says plainly "no special auth: no MCP token, no write token, no
     signature header, just the same bearer JWT as the webpage"); it's this
-    platform's own gateway-routing concern, confirmed empirically on the
-    prior build of this server (requests with only the Authorization header
-    got 404 {"error": "App not found"}; adding X_Tenant_ID fixed it) and
-    carried forward here since it's the same App/platform, not re-verified
-    against these specific new endpoints — see README Known Gaps.
+    platform's own gateway-routing concern. Kept here on the strength of
+    the SOP that every other MCP in this fleet forwards it, not because
+    it's been freshly proven for this endpoint: a dummy-token request to
+    the external gateway returns the identical generic 404
+    {"error": "App not found"} whether or not X_Tenant_ID is present, and
+    whether the app slug is even correct — see README Known Gaps for the
+    slug bug this exact blind spot let through undetected for weeks.
 
     Reuses the module-level connection pool (see _get_http_client) across
     every call made through this instance, rather than opening a new

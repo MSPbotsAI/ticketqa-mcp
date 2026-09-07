@@ -8,7 +8,26 @@ is constructed directly in-memory.
 import httpx
 import pytest
 
-from ticketqa_mcp.api_client import TicketQAClient, TicketQAError
+from ticketqa_mcp.api_client import (
+    _CRITERIA_PREFIX,
+    _QA_PREFIX,
+    TicketQAClient,
+    TicketQAError,
+)
+
+
+def test_app_slug_has_no_hyphen_between_ticket_and_qa():
+    # Regression guard for a real bug (present from this repo's first
+    # commit through 2026-09-06): the platform's actual registered App
+    # slug is "agent-ticketqa" (confirmed 2026-09-07 by reading the Agent
+    # Platform's own /api/apps registry and comparing authenticated calls
+    # to both spellings — "agent-ticketqa" gets the App's real 401
+    # envelope, "agent-ticket-qa" gets a generic 404 that never reaches
+    # the App). Every request silently 404'd until this was fixed.
+    assert _QA_PREFIX == "/apps/agent-ticketqa/api/qa"
+    assert _CRITERIA_PREFIX == "/apps/agent-ticketqa/api/criteria"
+    assert "agent-ticket-qa" not in _QA_PREFIX
+    assert "agent-ticket-qa" not in _CRITERIA_PREFIX
 
 
 def _client():

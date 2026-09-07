@@ -5,7 +5,7 @@ suite (`ticket-qa-runtime` / `qa-writeback` / `qa-ticket-preview`) write and
 read back the App-orchestrated, per-ticket QA evaluation pipeline.
 
 > **Naming note:** this is not a third-party vendor integration. It wraps an
-> **internal MSPbots App API** (path prefix `/apps/agent-ticket-qa/api/...`)
+> **internal MSPbots App API** (path prefix `/apps/agent-ticketqa/api/...`)
 > that backs the "Agent Ticket QA" feature (parent PRD
 > [PRD-14493](https://app.clickup.com/t/2280862/PRD-14493)). "MSP" in the
 > header names below refers to the MSPbots Agent Platform itself, not an
@@ -115,8 +115,8 @@ Every request to `/mcp` must include the following HTTP headers:
 | Header | 类型 | 是否必填 | 默认值 | 枚举值 | 字段描述 | Example |
 |---|---|---|---|---|---|---|
 | `X-MSP-Token` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)——App 侧文档(qa-api-spec.md v1.1 §1.2)明确说这就是网页请求用的同一个 token,没有专用 MCP token、写 token 或签名 header。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-MSP-Token: eyJhbGciOiJFZERTQSJ9...` |
-| `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。转发给下游 App API 时改名为 `X_Tenant_ID` header——这是**平台路由层**用来判断请求归属哪个 app/租户的机制,App 自己的接口规范完全没提到(它描述的是"请求路由成功之后 App 自己怎么响应",不包括路由本身),是上一版实测确认的(只带 Bearer token 不带这个 header 会返回 `404 {"error": "App not found"}`),这版沿用未重新验证。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
-| `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | App API 所在的 host。本服务据此拼接 `/apps/agent-ticket-qa/api/qa/<endpoint>`(六个流水线接口)或 `/apps/agent-ticket-qa/api/criteria`(规则集接口,前缀不同——qa-api-spec.md v1.1 §3.7 明确指出)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
+| `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。转发给下游 App API 时改名为 `X_Tenant_ID` header——这是**平台路由层**用来判断请求归属哪个 app/租户的机制,App 自己的接口规范完全没提到(它描述的是"请求路由成功之后 App 自己怎么响应",不包括路由本身)。沿用是因为这批 MCP 全按 SOP 统一转发这个 header,但它是否真的被这条路由用到**没有被可靠验证过**——2026-09-07 实测发现,用假 token 时带不带这个 header,网关返回的都是一模一样的 `404 {"error": "App not found"}`,说明假 token 场景下根本测不出这个 header 有没有用(详见 README Known Gaps)。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
+| `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | App API 所在的 host。本服务据此拼接 `/apps/agent-ticketqa/api/qa/<endpoint>`(六个流水线接口)或 `/apps/agent-ticketqa/api/criteria`(规则集接口,前缀不同——qa-api-spec.md v1.1 §3.7 明确指出)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
 
 Missing any of the three headers returns `401 Unauthorized`.
 
@@ -184,35 +184,49 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Known Gaps
 
-- **Not yet exercised against a real evaluation.** This build was written
-  entirely from the finalized `qa-api-spec.md` v1.1 — field names, types,
-  data-precondition rules, and idempotency semantics are all taken directly from
-  the spec, not guessed. The spec itself states the App side has passed its
-  own offline acceptance suite (fake-skill 32 / pipeline-e2e 21 / p4-verify
-  33 assertions), but **no call from this server has been run against a
-  real `eval_ref`** — that needs an actual evaluation run (App-triggered) to
-  test against, which wasn't available while building this.
-- **The `X_Tenant_ID` gateway-routing requirement is carried forward, not
-  re-verified against these specific new endpoints.** The prior build of
-  this server confirmed empirically that the platform's routing layer 404s
-  with a flat `{"error": "App not found"}` (not the App's own envelope
-  shape — see next point) without this header, even with a valid bearer
-  token. Live-called again during this rebuild (`GET
-  /apps/agent-ticket-qa/api/criteria` against a real INT host with a dummy
-  tenant/token) and got exactly that same 404 shape back — the routing
-  layer's behavior itself is reconfirmed live, though of course a *real*
-  tenant/token pair was never tried.
+- **Fixed 2026-09-07: the App slug was wrong from this repo's very first
+  commit (2026-07-24) until now.** Every path was built as
+  `/apps/agent-ticket-qa/...` (hyphen between "ticket" and "qa"). The
+  platform's real registered slug — confirmed by reading the Agent
+  Platform's own `/api/apps` registry live, then by comparing authenticated
+  same-origin calls to both spellings — is **`agent-ticketqa`** (no
+  hyphen): `agent-ticketqa` returns the App's real `401 {"success": false,
+  "error": {"code": "unauthorized", ...}}` envelope, while
+  `agent-ticket-qa` returns a generic `404 {"error": "Not Found"}` that
+  never reaches the App at all. This means **every real call this server
+  ever made to the App would have 404'd**, indistinguishable from the
+  routing layer's own tenant/token-resolution 404 discussed below — which
+  is exactly why it went unnoticed through two rebuilds' worth of
+  dummy-token live testing. Fixed by changing `_QA_PREFIX`/
+  `_CRITERIA_PREFIX` in `api_client.py`. If this server was ever deployed
+  before this fix landed, every one of its tool calls was silently
+  failing.
+- **The `X_Tenant_ID` gateway-routing requirement's original justification
+  no longer holds up, and hasn't been re-derived.** It was first documented
+  in July 2026 by observing that a dummy-token request 404'd without it.
+  Re-tested 2026-09-07 (with the *corrected* slug above): a dummy-token
+  request to the external gateway (`agentint.mspbots.ai`) returns the
+  exact same generic `{"error": "App not found"}` whether or not
+  `X_Tenant_ID` is sent — the external gateway appears to reject an
+  invalid token before it ever gets far enough to check the app slug or
+  tenant. In other words, **the test methodology that "confirmed" this
+  requirement cannot actually distinguish a missing header from a wrong
+  slug from an invalid token** — all three collapse to the identical
+  response. The header is kept because every other MCP in this fleet
+  forwards it per the vendor-mcp SOP, not because its necessity has been
+  freshly proven here. A real token is needed to settle this properly.
 - **Two response envelopes exist, and this client now handles both.** The
   App's own documented envelope (`{success, data}` / `{success: false,
   error: {code, message, details}}`, qa-api-spec.md v1.1 §1.4) only applies
-  once a request actually reaches App code. A routing-layer failure (wrong
-  or missing tenant, app not found) never reaches that code at all, and
-  comes back as this platform's own flat `{"error": "<string>"}` instead —
-  confirmed by the live 404 above. `TicketQAClient._handle` checks for a
-  `message` key first, then an `error` string key, before giving up with a
-  generic "unknown error"; get this wrong and a real "App not found" or
-  similar routing failure collapses into an unhelpful message with no
-  actionable content.
+  once a request actually reaches App code — confirmed live via an
+  authenticated same-origin call to the correct slug (real `401`, real
+  envelope shape). A routing-layer failure (wrong slug, wrong or missing
+  tenant, invalid token) never reaches that code at all, and comes back as
+  this platform's own flat `{"error": "<string>"}` instead.
+  `TicketQAClient._handle` checks for a `message` key first, then an
+  `error` string key, before giving up with a generic "unknown error"; get
+  this wrong and a real routing failure collapses into an unhelpful
+  message with no actionable content.
 - **`error.details` (the field-level validation error list) is passed
   through verbatim, per the spec's own explicit instruction** ("skill 依赖
   它在同一回合内自纠重试" — swallowing it lets the model retry blind).

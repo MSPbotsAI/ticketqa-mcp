@@ -14,10 +14,12 @@ from .config import Settings
 # GatewayTokenMiddleware sets this before the MCP handler runs.
 # Python asyncio copies context per task, so concurrent SSE connections are isolated.
 # Value is (access_token, host, tenant_id). tenant_id IS forwarded to the
-# downstream App API — as an X_Tenant_ID header. This was confirmed
-# empirically: the platform's routing layer 404s ("App not found") without
-# it, even with a valid bearer token. Not documented in the App's own spec
-# (qa-api-spec.md v1.1 §1.2), which only mentions the Authorization header.
+# downstream App API — as an X_Tenant_ID header, per the vendor-mcp SOP
+# every other MCP in this fleet follows. Not documented in the App's own
+# spec (qa-api-spec.md v1.1 §1.2), which only mentions the Authorization
+# header — and its actual necessity on this route hasn't been reliably
+# confirmed (a dummy-token request 404s identically with or without it;
+# see api_client.py's TicketQAClient docstring and README Known Gaps).
 _gateway_creds_var: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
     "ticketqa_gateway_creds", default=None
 )
