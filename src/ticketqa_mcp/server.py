@@ -14,10 +14,12 @@ from .config import Settings
 # GatewayTokenMiddleware sets this before the MCP handler runs.
 # Python asyncio copies context per task, so concurrent SSE connections are isolated.
 # Value is (access_token, host, tenant_id). tenant_id IS forwarded to the
-# downstream App API — as an X_Tenant_ID header. This was confirmed
-# empirically: the platform's routing layer 404s ("App not found") without
-# it, even with a valid bearer token. Not documented in the App's own spec
-# (qa-api-spec.md v1.0 §1.2), which only mentions the Authorization header.
+# downstream App API — as an X_Tenant_ID header, per the vendor-mcp SOP
+# every other MCP in this fleet follows. Not documented in the App's own
+# spec (qa-api-spec.md v1.1 §1.2), which only mentions the Authorization
+# header — and its actual necessity on this route hasn't been reliably
+# confirmed (a dummy-token request 404s identically with or without it;
+# see api_client.py's TicketQAClient docstring and README Known Gaps).
 _gateway_creds_var: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
     "ticketqa_gateway_creds", default=None
 )
@@ -91,24 +93,22 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         name="ticketqa-mcp",
         instructions=(
             "MSPbots Agent Ticket QA scores a closed PSA ticket against a "
-            "rules rubric. The App orchestrates the whole evaluation as a "
-            "stage machine (assemble -> judging, once per domain -> summary "
-            "-> archived) and drives it turn by turn; this server is only "
-            "ever called from inside one such turn — it never advances the "
-            "stage itself, that always happens on the App's own next turn. "
-            "eval_ref (from the turn message's [qa_ref] marker) links every "
-            "call in one evaluation.\n\n"
-            "Turn flow: qa_store_ticket_data once in the assemble turn; "
-            "qa_store_domain_results once per domain in each judging turn "
-            "(qa_get_ticket_data to re-read the snapshot as evidence); "
-            "qa_store_summary once, after every domain is stored, which "
-            "also archives the evaluation in the same call. If a turn hits "
-            "an unrecoverable failure, call qa_report_turn_error and stop — "
-            "never keep going or call another pipeline tool after it. Once "
-            "archived, a later turn may ask for external actions (a PSA "
-            "note, a field update, an alert) — report every one of them "
-            "with qa_report_writeback, including a status=\"skipped\" "
-            "report when you deliberately don't act.\n\n"
+            "rules rubric, entirely within one run: the App sends one "
+            "message carrying eval_ref (via its [qa_ref] marker) plus the "
+            "full rule dispatch, and this server is never paced turn by "
+            "turn after that — everything below happens in that same run.\n\n"
+            "Flow: qa_store_ticket_data once; then qa_store_domain_results "
+            "once per domain — any domain, any order (qa_get_ticket_data "
+            "to re-read the snapshot as evidence first if useful); then "
+            "qa_store_summary once every domain is stored, which also "
+            "archives the evaluation in the same call. If a step hits an "
+            "unrecoverable failure, call qa_report_turn_error and stop — "
+            "never keep going or call another pipeline tool after it (the "
+            "App resends the same message, up to twice). Once archived, "
+            "stay in this run to report every external action taken (a "
+            "PSA note, a field update, an alert) with qa_report_writeback, "
+            "including a status=\"skipped\" report when you deliberately "
+            "don't act.\n\n"
             "qa_get_ruleset is unrelated to all of the above — it's a "
             "live, uncached rule lookup for conversational/preview scoring "
             "outside a real App-driven evaluation only."

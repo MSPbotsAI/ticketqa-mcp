@@ -1,4 +1,4 @@
-"""The one endpoint unrelated to any eval_ref (qa-api-spec.md v1.0 §3.7).
+"""The one endpoint unrelated to any eval_ref (qa-api-spec.md v1.1 §3.7).
 
 Lives at a different path prefix (/api/criteria, not /api/qa/...) because it
 shares its backing endpoint with the product's own Criteria settings tab —
@@ -21,9 +21,9 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
         """Get the live QA rule set (domains and rules) currently in effect.
 
         For conversational/preview scoring only — a real evaluation never
-        calls this, since the App dispatches each domain's frozen rule
-        snapshot in its own turn messages. Never cache: a rule can be
-        edited on the settings page at any moment.
+        calls this, since the App sends the frozen rule dispatch in the
+        run's opening message. Never cache: a rule can be edited on the
+        settings page at any moment.
 
         Skip any domain or rule with enabled=false. Judge only against a
         rule's effective_instruction — never the raw instruction/

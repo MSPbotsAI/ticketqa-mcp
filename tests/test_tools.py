@@ -15,7 +15,7 @@ from ticketqa_mcp.config import Settings
 from ticketqa_mcp.server import create_mcp_server
 
 # required params + annotation hints expected for each of the 7 tools
-# (qa-api-spec.md v1.0 §3.1-3.7 / §4). Any signature change here is a
+# (qa-api-spec.md v1.1 §3.1-3.7 / §4). Any signature change here is a
 # breaking contract change.
 EXPECTED_TOOLS = {
     "qa_store_ticket_data": (
@@ -49,8 +49,9 @@ EXPECTED_TOOLS = {
 
 # qa_store_summary's docstring deliberately exceeds the SOP's 500-char
 # guideline (a "should" not a hard rule): it's the atomic archive step —
-# duplicate-replay semantics, and "wait for the App's own next turn"
-# afterward — are load-bearing correctness/safety information, not filler.
+# duplicate-replay semantics, and "continue in this same run to report
+# write-backs" afterward — are load-bearing correctness/safety information,
+# not filler.
 _LONG_DESCRIPTION_EXCEPTIONS = {"qa_store_summary", "qa_report_turn_error"}
 
 
@@ -146,8 +147,8 @@ def test_error_envelope_without_domain_code():
 
 
 def test_error_envelope_passes_through_validation_details():
-    # qa-api-spec.md v1.0 §1.4/§4: `error.details` must reach the model
-    # verbatim — the skill depends on it to self-correct in the same turn.
+    # qa-api-spec.md v1.1 §1.4/§4: `error.details` must reach the model
+    # verbatim — the skill depends on it to self-correct in the same run.
     details = [{"path": "rule_results[1].score", "code": "invalid_enum", "expected": "pass|fail", "got": "passed"}]
     err = TicketQAError(400, "validation_failed", "2 field error(s)", details)
     envelope = json.loads(err.to_envelope())
