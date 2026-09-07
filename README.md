@@ -16,7 +16,7 @@ read back the App-orchestrated, per-ticket QA evaluation pipeline.
 This server implements the [Model Context Protocol](https://modelcontextprotocol.io/)
 (Streamable HTTP/SSE transport) and exposes **7 tools**, one per endpoint in
 the App's finalized data-interface spec
-(`qa-api-spec.md` v1.0, attached to [PRD-18253](https://app.clickup.com/t/2280862/PRD-18253)):
+(`qa-api-spec.md` v1.1, attached to [PRD-18253](https://app.clickup.com/t/2280862/PRD-18253)):
 
 | Tool | Endpoint | Read/write |
 |---|---|---|
@@ -45,24 +45,42 @@ domain) → summary → archived`, §1.3), and the finalized v1.0 spec
 replaces the tool layer entirely rather than patching the old one. See git
 history for the prior build if it's ever needed for reference.
 
+### v1.1 (2026-09-04, same day) — single-run model, no tool changes
+
+The spec was revised again the same day to back a new orchestration design
+(migration decision D27): instead of the App dispatching one stage per
+turn across a multi-turn conversation, it now sends **one message** with
+the full rule dispatch and the skill completes the *entire* evaluation —
+every domain, in any order, then summary, then every write-back — in that
+same run. Per the spec's own v1.1 changelog this is a **backward-compatible
+relaxation only**: paths, field names, and response shapes are all
+unchanged, so none of the 7 tools needed a request/response-contract
+change. What did need fixing were the tool *descriptions* — they encoded
+the old, no-longer-true turn-by-turn constraints (a domain had to be
+"whichever one the App dispatched this turn"; `failed_stage` had to match
+the App's tracked progress; the skill had to "wait for the App's next
+turn" after summary before reporting write-backs). All of that language is
+now updated to match v1.1's data-precondition, single-run model.
+
 ## The evaluation lifecycle, in one paragraph
 
-One ticket evaluation = one `eval_ref` (uuid), generated and fully
-orchestrated by the App as a sequence of turns. This server is only ever
-called from *inside* one App-initiated turn — a tool here never advances
-the stage itself; the next turn always starts on the App's own schedule.
-`qa_store_ticket_data` happens once (assemble); `qa_store_domain_results`
-happens once per domain (judging — the App tells the skill which domain is
-current each turn); `qa_store_summary` happens once, and archives the
-evaluation in the same call; `qa_get_ticket_data` may be called at any point
-after assembly to re-fetch the authoritative snapshot instead of trusting
-conversation memory. If a turn can't be completed, `qa_report_turn_error`
-ends it cleanly instead of leaving the App's watchdog to guess a timeout.
-Once archived, any external action taken (a PSA note, a field update, an
-alert) must be reported through `qa_report_writeback` — including a
-deliberate no-op, reported as `status="skipped"`. `qa_get_ruleset` stands
-apart from all of this: it's for conversational/preview scoring only, and
-carries no `eval_ref`.
+One ticket evaluation = one `eval_ref` (uuid). The App opens a thread and
+sends a single message carrying `eval_ref` (via its `[qa_ref]` marker) plus
+the full rule dispatch — this server is never paced turn by turn after
+that; the skill works through every step of the evaluation in that same
+run. `qa_store_ticket_data` happens once; `qa_store_domain_results` happens
+once per domain — any domain, any order; `qa_store_summary` happens once
+every domain is stored, and archives the evaluation in the same call;
+`qa_get_ticket_data` may be called at any point after the snapshot is
+stored to re-fetch the authoritative data instead of trusting conversation
+memory. If a step can't be completed, `qa_report_turn_error` reports it and
+the skill stops — the App resends the same message (up to twice) rather
+than the skill retrying on its own. Once archived, the skill continues in
+this same run to report every external action taken (a PSA note, a field
+update, an alert) through `qa_report_writeback` — including a deliberate
+no-op, reported as `status="skipped"`. `qa_get_ruleset` stands apart from
+all of this: it's for conversational/preview scoring only, and carries no
+`eval_ref`.
 
 ## Quick Start
 
@@ -96,9 +114,9 @@ Every request to `/mcp` must include the following HTTP headers:
 
 | Header | 类型 | 是否必填 | 默认值 | 枚举值 | 字段描述 | Example |
 |---|---|---|---|---|---|---|
-| `X-MSP-Token` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)——App 侧文档(qa-api-spec.md v1.0 §1.2)明确说这就是网页请求用的同一个 token,没有专用 MCP token、写 token 或签名 header。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-MSP-Token: eyJhbGciOiJFZERTQSJ9...` |
+| `X-MSP-Token` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)——App 侧文档(qa-api-spec.md v1.1 §1.2)明确说这就是网页请求用的同一个 token,没有专用 MCP token、写 token 或签名 header。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-MSP-Token: eyJhbGciOiJFZERTQSJ9...` |
 | `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。转发给下游 App API 时改名为 `X_Tenant_ID` header——这是**平台路由层**用来判断请求归属哪个 app/租户的机制,App 自己的接口规范完全没提到(它描述的是"请求路由成功之后 App 自己怎么响应",不包括路由本身),是上一版实测确认的(只带 Bearer token 不带这个 header 会返回 `404 {"error": "App not found"}`),这版沿用未重新验证。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
-| `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | App API 所在的 host。本服务据此拼接 `/apps/agent-ticket-qa/api/qa/<endpoint>`(六个流水线接口)或 `/apps/agent-ticket-qa/api/criteria`(规则集接口,前缀不同——qa-api-spec.md v1.0 §3.7 明确指出)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
+| `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | App API 所在的 host。本服务据此拼接 `/apps/agent-ticket-qa/api/qa/<endpoint>`(六个流水线接口)或 `/apps/agent-ticket-qa/api/criteria`(规则集接口,前缀不同——qa-api-spec.md v1.1 §3.7 明确指出)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
 
 Missing any of the three headers returns `401 Unauthorized`.
 
@@ -123,17 +141,17 @@ Connect your MCP client with:
 
 | Tool | 功能 | 参数 |
 |---|---|---|
-| `qa_store_ticket_data` | 写入装配好的工单快照(assemble 阶段) | `eval_ref`(必填)、`ticket_id`(必填)、`ticket_data`(必填 dict)、`ticket_content_hash?`、`capture_updated_time?`、`psa?` |
-| `qa_get_ticket_data` | 回查工单快照(只读,装配完成后任意时刻,含归档后) | `eval_ref`(必填) |
-| `qa_store_domain_results` | 写入单个域的逐规则判定(judging 阶段,每域一次) | `eval_ref`(必填)、`domain`(必填)、`rule_results`(必填 list) |
-| `qa_store_summary` | 写入整单评级+coaching,同事务内归档(summary 阶段) | `eval_ref`(必填)、`ticket_oml_level`(必填 int 1-5)、`ticket_pass`(必填 bool)、`pass_threshold`(必填 int)、`oml_explain`(必填 dict)、`coaching_suggestion`(必填 str ≤16000)、`skill_version?`、`judge_model?` |
+| `qa_store_ticket_data` | 写入装配好的工单快照 | `eval_ref`(必填)、`ticket_id`(必填)、`ticket_data`(必填 dict)、`ticket_content_hash?`、`capture_updated_time?`、`psa?` |
+| `qa_get_ticket_data` | 回查工单快照(只读,快照写入后任意时刻,含归档后) | `eval_ref`(必填) |
+| `qa_store_domain_results` | 写入单个域的逐规则判定(每域一次,域顺序不限) | `eval_ref`(必填)、`domain`(必填)、`rule_results`(必填 list) |
+| `qa_store_summary` | 写入整单评级+coaching,同事务内归档 | `eval_ref`(必填)、`ticket_oml_level`(必填 int 1-5)、`ticket_pass`(必填 bool)、`pass_threshold`(必填 int)、`oml_explain`(必填 dict)、`coaching_suggestion`(必填 str ≤16000)、`skill_version?`、`judge_model?` |
 | `qa_report_writeback` | 回报一次写回动作结果(仅归档后) | `eval_ref`(必填)、`action_type`(必填 write_note\|update_field\|send_alert)、`status`(必填 success\|failed\|skipped)、`action_ref?`、`target?`、`detail?`、`error?`、`executed_at?` |
-| `qa_report_turn_error` | 上报回合内不可恢复失败(assemble/judging/summary 通用) | `eval_ref`(必填)、`failed_stage`(必填)、`error_type`(必填)、`error_message`(必填)、`detail?` |
+| `qa_report_turn_error` | 上报不可恢复失败(assemble/judging/summary 通用) | `eval_ref`(必填)、`failed_stage`(必填)、`error_type`(必填)、`error_message`(必填)、`detail?` |
 | `qa_get_ruleset` | 读取当前生效规则集(只读,与评估无关,供对话式预览) | 无参数 |
 
 `rule_results[]`(用于 `qa_store_domain_results`):`rule_id`(必填,须属于该域下发集合)、`score`(必填 `pass`\|`fail`)、`confidence?`(int 0-100)、`findings`(必填 str ≤16000)、`corrective_action?`(str ≤2048)。**不要**提交 `oml_level`/`alpha`/`base_severity`——App 自己从派发时的规则快照补齐。
 
-字段级完整规格见 [`qa-api-spec.md` v1.0](https://app.clickup.com/t/2280862/PRD-18253)(附件),本 README 只摘录 MCP 封装相关的部分。
+字段级完整规格见 [`qa-api-spec.md` v1.1](https://app.clickup.com/t/2280862/PRD-18253)(附件),本 README 只摘录 MCP 封装相关的部分。
 
 ## 测试示例 (Test Example)
 
@@ -154,15 +172,21 @@ curl -X POST http://localhost:8080/mcp \
 
 ## API Reference
 
-- Source spec: `qa-api-spec.md` v1.0 (finalized 2026-09-04), attached to [PRD-18253](https://app.clickup.com/t/2280862/PRD-18253)
+- Source spec: `qa-api-spec.md` v1.1 (2026-09-04, same-day backward-compatible
+  revision of the v1.0 finalized spec), attached to [PRD-18253](https://app.clickup.com/t/2280862/PRD-18253)
 - Index doc for integrators: `MCP-REQUIREMENTS.md`, same attachment set
 - Parent feature: [PRD-14493 — POC Agent Ticket QA](https://app.clickup.com/t/2280862/PRD-14493)
+- **Out of scope, informational only**: a separate `qa-onboarding-api-spec.md`
+  (v0.1) covers a distinct Agent-led onboarding module (5 tools) — the spec's
+  own note is explicit that this doesn't touch the 7 endpoints here. Not
+  wrapped by this server; flagging so it isn't mistaken for a missed scope
+  item.
 
 ## Known Gaps
 
 - **Not yet exercised against a real evaluation.** This build was written
-  entirely from the finalized `qa-api-spec.md` v1.0 — field names, types,
-  stage-gating rules, and idempotency semantics are all taken directly from
+  entirely from the finalized `qa-api-spec.md` v1.1 — field names, types,
+  data-precondition rules, and idempotency semantics are all taken directly from
   the spec, not guessed. The spec itself states the App side has passed its
   own offline acceptance suite (fake-skill 32 / pipeline-e2e 21 / p4-verify
   33 assertions), but **no call from this server has been run against a
@@ -180,7 +204,7 @@ curl -X POST http://localhost:8080/mcp \
   tenant/token pair was never tried.
 - **Two response envelopes exist, and this client now handles both.** The
   App's own documented envelope (`{success, data}` / `{success: false,
-  error: {code, message, details}}`, qa-api-spec.md v1.0 §1.4) only applies
+  error: {code, message, details}}`, qa-api-spec.md v1.1 §1.4) only applies
   once a request actually reaches App code. A routing-layer failure (wrong
   or missing tenant, app not found) never reaches that code at all, and
   comes back as this platform's own flat `{"error": "<string>"}` instead —

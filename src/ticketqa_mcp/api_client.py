@@ -8,7 +8,7 @@ from ._json import error_envelope
 # Six of the seven endpoints live under .../api/qa/<endpoint>; the seventh
 # (read-only ruleset) deliberately lives under .../api/criteria instead — it
 # shares that path with the page's own Criteria tab, not the qa/* family. See
-# qa-api-spec.md v1.0 §3.7: "路径前缀是 /api/criteria 而不是 /api/qa". Do not
+# qa-api-spec.md v1.1 §3.7: "路径前缀是 /api/criteria 而不是 /api/qa". Do not
 # hardcode either prefix elsewhere — X-MSP-Host only carries the bare host.
 _QA_PREFIX = "/apps/agent-ticket-qa/api/qa"
 _CRITERIA_PREFIX = "/apps/agent-ticket-qa/api/criteria"
@@ -35,7 +35,7 @@ def _get_http_client() -> httpx.AsyncClient:
 
 # status_code -> (error code, retryable). status_code 0 means a network/
 # connection-level failure (no response at all). Table matches qa-api-spec.md
-# v1.0 §2 exactly: 401 unauthorized, 404 eval_not_found, 409 invalid_stage /
+# v1.1 §2 exactly: 401 unauthorized, 404 eval_not_found, 409 invalid_stage /
 # evaluation_closed, 400 validation_failed, 413 payload_too_large, 500
 # internal_error. The API's own `error.code` string (e.g. "invalid_stage") is
 # carried separately on TicketQAError.code — this table only maps the HTTP
@@ -75,7 +75,7 @@ class TicketQAError(Exception):
         # self.code is the App's own domain error code (e.g. "invalid_stage",
         # "eval_not_found"), distinct from the SOP's fixed vocabulary in
         # envelope_code — surface both. `details` is the field-level error
-        # list qa-api-spec.md v1.0 §1.4/§4 says must be passed through
+        # list qa-api-spec.md v1.1 §1.4/§4 says must be passed through
         # verbatim ("skill 依赖它在同一回合内自纠重试" — swallowing it means
         # the model can't self-correct), so it's appended rather than dropped.
         message = f"[{self.code}] {self.message}" if self.code else self.message
@@ -86,11 +86,11 @@ class TicketQAError(Exception):
 
 class TicketQAClient:
     """Async httpx client wrapping the agent-ticketqa App's QA data API
-    (qa-api-spec.md v1.0).
+    (qa-api-spec.md v1.1).
 
     The platform's routing layer resolves which tenant/app instance a
     request belongs to via an `X_Tenant_ID` HTTP header. This is separate
-    from — and not mentioned by — the App's own documented auth (v1.0 §1.2
+    from — and not mentioned by — the App's own documented auth (v1.1 §1.2
     says plainly "no special auth: no MCP token, no write token, no
     signature header, just the same bearer JWT as the webpage"); it's this
     platform's own gateway-routing concern, confirmed empirically on the
@@ -180,7 +180,7 @@ class TicketQAClient:
         except ValueError:
             body = {"raw_response": resp.text}
 
-        # qa-api-spec.md v1.0 §1.4: success/failure is judged by the
+        # qa-api-spec.md v1.1 §1.4: success/failure is judged by the
         # `success` field, and HTTP status always agrees with it — but check
         # both, since a raw_response fallback (non-JSON body) has neither.
         if isinstance(body, dict) and "success" in body:

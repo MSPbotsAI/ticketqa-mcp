@@ -1,9 +1,11 @@
-"""The six eval_ref-scoped pipeline endpoints (qa-api-spec.md v1.0 §3.1-3.6).
+"""The six eval_ref-scoped pipeline endpoints (qa-api-spec.md v1.1 §3.1-3.6).
 
-One ticket evaluation = one eval_ref, orchestrated entirely by the App
-through a fixed stage machine (assemble -> judging -> summary -> archived /
-failed). The skill only ever acts within one App-initiated turn; it never
-advances the stage itself. See server.py's instructions for the full
+One ticket evaluation = one eval_ref. Since v1.1 (D27 single-run model) the
+skill completes every step of one evaluation within a single run, in one
+sitting: it is not paced turn-by-turn by the App, and domains may be judged
+in any order. `qa_stage` is now just a progress label the App shows on its
+own Tickets page and records on a failure — it is no longer a gate the
+skill has to wait its turn for. See server.py's instructions for the full
 lifecycle description surfaced to the calling agent.
 """
 
@@ -20,14 +22,14 @@ from ._common import NO_TOKEN
 
 _EVAL_REF_DESC = (
     "Required (uuid). The evaluation this call belongs to — copy it verbatim "
-    "from the turn message's [qa_ref] marker. Never invent or guess one."
+    "from the run's opening message's [qa_ref] marker. Never invent or guess one."
 )
 
 
 def _ticket_pass_mismatch(
     ticket_oml_level: int, ticket_pass: bool, pass_threshold: int
 ) -> str | None:
-    """qa-api-spec.md v1.0 §3.4: the App enforces ticket_pass ==
+    """qa-api-spec.md v1.1 §3.4: the App enforces ticket_pass ==
     (ticket_oml_level >= pass_threshold) as a hard invariant and rejects the
     whole call otherwise. Checking it here catches an obviously-inconsistent
     verdict before spending a round trip on a call the App will refuse.
@@ -87,17 +89,18 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
                 description=(
                     "Optional, informational only — the App does not read this "
                     "for routing (PSA is fixed per instance and tracked "
-                    "separately from the turn message's [qa_psa] marker)."
+                    "separately from the message's [qa_psa] marker)."
                 )
             ),
         ] = None,
     ) -> str:
-        """Store the assembled ticket snapshot for one evaluation (assemble stage).
+        """Store the assembled ticket snapshot for one evaluation.
 
-        Only accepted while the evaluation is in the "assemble" stage.
-        Idempotent: re-posting the same eval_ref overwrites it (safe for
-        turn retries); a late resubmit after the stage has already advanced
-        returns success with duplicate=true and changes nothing.
+        Accepted any time before the evaluation archives or fails.
+        Idempotent: re-posting the same eval_ref overwrites the snapshot
+        (safe for message retries) — but once judging has already started,
+        a resubmit is a no-op that returns duplicate=true and changes
+        nothing.
         """
         client = client_factory()
         if client is None:
@@ -143,8 +146,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
             str,
             Field(
                 description=(
-                    "Required domain code, matching exactly what the current "
-                    "turn message dispatched (e.g. \"ticket-hygiene\")."
+                    "Required domain code, matching one of the domains the "
+                    "message's rule dispatch covers (e.g. \"ticket-hygiene\"). "
+                    "Domains may be submitted in any order — this is not "
+                    "gated to whichever one the App last asked about."
                 )
             ),
         ],
@@ -168,13 +173,12 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
             ),
         ],
     ) -> str:
-        """Store one domain's rule-by-rule judging results (judging stage, once per domain).
+        """Store one domain's rule-by-rule judging results, once per domain.
 
-        Only accepted for the domain currently dispatched by the App —
-        except a domain already stored for this eval_ref, which can be
-        resubmitted at any time as a full replacement (e.g. after fixing a
-        validation error, or an App-initiated re-judge), reported as
-        replayed=true and without advancing the stage again.
+        Accepted for any domain once the ticket snapshot (qa_store_ticket_data)
+        is stored — domains may be judged in any order, all within the same
+        run. Resubmitting an already-stored domain fully replaces it (e.g.
+        after fixing a validation error), reported as replayed=true.
         """
         client = client_factory()
         if client is None:
@@ -206,8 +210,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
             int,
             Field(
                 description=(
-                    "Required — must equal the threshold value the App sent in "
-                    "the turn message, not a value you choose."
+                    "Required — must equal the threshold value the App "
+                    "provided in its message, not a value you choose."
                 )
             ),
         ],
@@ -231,15 +235,16 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
             str | None, Field(description="Optional judge-model identifier, for provenance.")
         ] = None,
     ) -> str:
-        """Store the overall rating and coaching, and archive the evaluation (summary stage).
+        """Store the overall rating and coaching, and archive the evaluation.
 
         Only accepted once every domain's results are already stored for
         this eval_ref. Archiving happens in the same call, atomically —
         there is no separate archive step. A late resubmit after archiving
         (e.g. a lost response on the original call) returns success with
         duplicate=true and does not create a new version. After this call
-        succeeds, the evaluation is closed: wait for the App's own follow-up
-        turn before reporting any writeback action.
+        succeeds, the evaluation is closed: continue in this same run to
+        report any write-back action with qa_report_writeback — do not
+        wait for a further instruction from the App.
         """
         client = client_factory()
         if client is None:
@@ -338,10 +343,13 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
             str,
             Field(
                 description=(
-                    'Required — the stage that failed: "assemble", '
+                    'Required — the step that failed: "assemble", '
                     '"judging:<domain>" (e.g. "judging:ticket-hygiene"), or '
-                    '"summary". Must match the stage this turn was actually '
-                    "in."
+                    '"summary". Report whichever of these you were actually '
+                    "doing; this is validated only against these three "
+                    "shapes (a different value rejects with invalid_enum), "
+                    "not cross-checked against the App's own progress "
+                    "tracking."
                 )
             ),
         ],
@@ -362,17 +370,18 @@ def register(mcp: FastMCP, client_factory: Callable[[], TicketQAClient | None]) 
             str | None, Field(description="Optional, <=4000 chars — extra context (e.g. a truncated raw error).")
         ] = None,
     ) -> str:
-        """Report an unrecoverable in-turn failure (assemble/judging/summary stages only).
+        """Report an unrecoverable failure during assemble/judging/summary.
 
-        Use this instead of silently ending the turn when something makes
-        the current stage impossible to complete (data source unreachable,
+        Use this instead of silently stopping when something makes the
+        current step impossible to complete (data source unreachable,
         empty ticket, a CLI call failing) — without it the App's watchdog
-        only sees a timeout, with no root cause. End the turn right after
-        calling this; do not call any other pipeline tool afterward. Not
-        for a failed write-back action after archiving — report that
-        through qa_report_writeback's status="failed" instead. Rejected
-        with evaluation_closed if the evaluation is already archived or
-        failed.
+        only sees a timeout, with no root cause. Stop right after calling
+        this; do not call any other pipeline tool afterward — the App will
+        resend the same instruction (up to twice) rather than you retrying
+        it yourself. Not for a failed write-back action after archiving —
+        report that through qa_report_writeback's status="failed" instead.
+        Rejected with evaluation_closed if the evaluation is already
+        archived or failed.
         """
         client = client_factory()
         if client is None:

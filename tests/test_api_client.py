@@ -1,5 +1,5 @@
 """Unit tests for TicketQAClient._handle — the response-envelope parsing
-this fleet's other clients don't need, since qa-api-spec.md v1.0 wraps
+this fleet's other clients don't need, since qa-api-spec.md v1.1 wraps
 every response in {success, data} / {success: false, error: {...}}
 instead of using bare HTTP status alone. No network calls: httpx.Response
 is constructed directly in-memory.
