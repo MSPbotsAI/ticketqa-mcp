@@ -92,7 +92,9 @@ class TicketQAClient:
     request belongs to via an `X_Tenant_ID` HTTP header. This is separate
     from — and not mentioned by — the App's own documented auth (v1.1 §1.2
     says plainly "no special auth: no MCP token, no write token, no
-    signature header, just the same bearer JWT as the webpage"); it's this
+    signature header, just the same bearer JWT as the webpage" — that spec
+    predates PRD-19165, which retired the JWT platform-wide in favour of the
+    API key this client now passes through as `X-API-Key`); it's this
     platform's own gateway-routing concern. Kept here on the strength of
     the SOP that every other MCP in this fleet forwards it, not because
     it's been freshly proven for this endpoint: a dummy-token request to
@@ -113,7 +115,7 @@ class TicketQAClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._token}",
+            "X-API-Key": self._token,
             "X_Tenant_ID": self._tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",

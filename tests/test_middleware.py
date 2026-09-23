@@ -128,7 +128,8 @@ def test_client_factory_builds_client_with_tenant_header(monkeypatch):
         client = get_client_from_context(settings)
         assert client is not None
         assert client._headers()["X_Tenant_ID"] == "tenant-xyz"
-        assert client._headers()["Authorization"] == "Bearer tok"
+        assert client._headers()["X-API-Key"] == "tok"
+        assert "Authorization" not in client._headers()
     finally:
         _gateway_creds_var.reset(token)
 
