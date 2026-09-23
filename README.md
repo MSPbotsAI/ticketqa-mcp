@@ -114,9 +114,16 @@ Every request to `/mcp` must include the following HTTP headers:
 
 | Header | 类型 | 是否必填 | 默认值 | 枚举值 | 字段描述 | Example |
 |---|---|---|---|---|---|---|
-| `X-MSP-Token` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)——App 侧文档(qa-api-spec.md v1.1 §1.2)明确说这就是网页请求用的同一个 token,没有专用 MCP token、写 token 或签名 header。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-MSP-Token: eyJhbGciOiJFZERTQSJ9...` |
+| `X-API-Key` | string | 必填 | 无 | 无(自由文本,JWT) | Agent Platform 已签发的访问凭证(JWT bearer token)——App 侧文档(qa-api-spec.md v1.1 §1.2)明确说这就是网页请求用的同一个 token,没有专用 MCP token、写 token 或签名 header。本服务原样转发为下游请求的 `Authorization: Bearer <token>`,不做任何换取/校验逻辑。 | `X-API-Key: eyJhbGciOiJFZERTQSJ9...` |
 | `X-MSP-Tenant-Id` | string | 必填 | 无 | 无(自由文本,UUID) | 租户标识。转发给下游 App API 时改名为 `X_Tenant_ID` header——这是**平台路由层**用来判断请求归属哪个 app/租户的机制,App 自己的接口规范完全没提到(它描述的是"请求路由成功之后 App 自己怎么响应",不包括路由本身)。沿用是因为这批 MCP 全按 SOP 统一转发这个 header,但它是否真的被这条路由用到**没有被可靠验证过**——2026-09-07 实测发现,用假 token 时带不带这个 header,网关返回的都是一模一样的 `404 {"error": "App not found"}`,说明假 token 场景下根本测不出这个 header 有没有用(详见 README Known Gaps)。 | `X-MSP-Tenant-Id: e9f794fe-a6b4-4f35-bd2f-fcd19c5cc308` |
 | `X-MSP-Host` | string | 必填 | 无 | 无(自由文本,base URL) | App API 所在的 host。本服务据此拼接 `/apps/agent-ticketqa/api/qa/<endpoint>`(六个流水线接口)或 `/apps/agent-ticketqa/api/criteria`(规则集接口,前缀不同——qa-api-spec.md v1.1 §3.7 明确指出)。 | `X-MSP-Host: https://agentosint.mspbots.ai` |
+
+> ⏳ **过渡期兼容（2026-09-23 起）**：`X-API-Key` 取代了原来的 `X-MSP-Token`。改名前写入的
+> 租户凭据仍以旧名存在注册库里、由网关原样注入，因此中间件在读不到 `X-API-Key` 时会回退读
+> `X-MSP-Token`；两个都在时以 `X-API-Key` 为准。等所有租户凭据都按新名重存一遍后，删掉
+> `server.py` 里那段回退和 `tests/test_middleware.py::test_legacy_token_header_is_still_accepted`。
+>
+> `X-MSP-Tenant-Id` **不受本次改名影响**，仍然必填，仍然转发给下游。
 
 Missing any of the three headers returns `401 Unauthorized`.
 
@@ -135,7 +142,7 @@ POST http://localhost:8080/mcp
 
 Connect your MCP client with:
 - Transport: `http` (Streamable HTTP / SSE)
-- Headers: `X-MSP-Token`, `X-MSP-Tenant-Id`, `X-MSP-Host` (all required)
+- Headers: `X-API-Key`, `X-MSP-Tenant-Id`, `X-MSP-Host` (all required)
 
 ## Tool List
 
@@ -159,7 +166,7 @@ Connect your MCP client with:
 curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "X-MSP-Token: <token>" \
+  -H "X-API-Key: <token>" \
   -H "X-MSP-Tenant-Id: <tenant-id>" \
   -H "X-MSP-Host: https://agentosint.mspbots.ai" \
   -d '{
