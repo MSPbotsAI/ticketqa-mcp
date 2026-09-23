@@ -2,7 +2,7 @@
 values correctly reaching the per-request contextvar (no global-state
 leakage across requests).
 
-This server requires 3 headers — X-MSP-Token, X-MSP-Tenant-Id, and
+This server requires 3 headers — X-API-Key, X-MSP-Tenant-Id, and
 X-MSP-Host — because the platform's routing layer 404s ("App not found")
 without the tenant id forwarded downstream as an X_Tenant_ID header (see
 api_client.py / server.py docstrings).
@@ -39,7 +39,7 @@ def test_missing_all_headers_returns_401_with_required_headers_listed():
         )
         assert resp.status_code == 401
         body = resp.json()
-        assert body["required_headers"] == ["X-MSP-Token", "X-MSP-Tenant-Id", "X-MSP-Host"]
+        assert body["required_headers"] == ["X-API-Key", "X-MSP-Tenant-Id", "X-MSP-Host"]
 
 
 def test_missing_one_of_three_headers_still_returns_401():
@@ -52,7 +52,7 @@ def test_missing_one_of_three_headers_still_returns_401():
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
             headers={
                 "Accept": "application/json, text/event-stream",
-                "X-MSP-Token": "tok",
+                "X-API-Key": "tok",
                 "X-MSP-Host": "https://agentosint.mspbots.ai",
                 # X-MSP-Tenant-Id intentionally omitted
             },
@@ -86,7 +86,7 @@ def test_all_headers_present_reaches_request_context(monkeypatch):
             "type": "http",
             "path": "/mcp",
             "headers": [
-                (b"x-msp-token", b"test-token-123"),
+                (b"x-api-key", b"test-token-123"),
                 (b"x-msp-host", b"https://agentosint.mspbots.ai"),
                 (b"x-msp-tenant-id", b"tenant-abc"),
             ],
@@ -131,3 +131,83 @@ def test_client_factory_builds_client_with_tenant_header(monkeypatch):
         assert client._headers()["Authorization"] == "Bearer tok"
     finally:
         _gateway_creds_var.reset(token)
+
+
+def test_legacy_token_header_is_still_accepted():
+    # NOTE(transition, 2026-09-23): credential rows written before the
+    # X-MSP-Token -> X-API-Key rename still inject the old name. Delete this
+    # test together with the fallback in GatewayTokenMiddleware once every
+    # tenant credential has been re-saved.
+    app, _ = _make_app()
+    with TestClient(app) as client:
+        resp = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "X-MSP-Token": "legacy-token",
+                "X-MSP-Tenant-Id": "tenant-abc",
+                "X-MSP-Host": "https://agent.mspbots.ai",
+            },
+        )
+        assert resp.status_code == 200
+
+
+def _run_middleware_with(headers):
+    """Drive GatewayTokenMiddleware once and return what reached the contextvar."""
+    import asyncio
+
+    from ticketqa_mcp.server import GatewayTokenMiddleware, _gateway_creds_var
+
+    seen = {}
+
+    async def fake_app(scope, receive, send):
+        seen["creds"] = _gateway_creds_var.get()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = GatewayTokenMiddleware(fake_app, Settings())
+
+    async def run():
+        scope = {"type": "http", "path": "/mcp", "headers": headers}
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            pass
+
+        await middleware(scope, receive, send)
+
+    asyncio.run(run())
+    return seen["creds"]
+
+
+def test_x_api_key_wins_when_both_names_are_present():
+    # A tenant mid-migration can briefly have both stored; the new name is
+    # the one that counts, so re-saving a credential takes effect immediately.
+    creds = _run_middleware_with(
+        [
+            (b"x-api-key", b"new-key"),
+            (b"x-msp-token", b"legacy-key"),
+            (b"x-msp-tenant-id", b"tenant-abc"),
+            (b"x-msp-host", b"https://agent.mspbots.ai"),
+        ]
+    )
+    assert creds == ("new-key", "https://agent.mspbots.ai", "tenant-abc")
+
+
+def test_garbage_x_api_key_does_not_fall_back_to_legacy_token():
+    # The fallback condition is "primary absent", not "primary invalid". A
+    # present-but-wrong X-API-Key must be the one that reaches the downstream,
+    # otherwise a tenant who re-saved a bad credential would silently keep
+    # working on the old one and never find out it was broken.
+    creds = _run_middleware_with(
+        [
+            (b"x-api-key", b"garbage"),
+            (b"x-msp-token", b"good-legacy-token"),
+            (b"x-msp-tenant-id", b"tenant-abc"),
+            (b"x-msp-host", b"https://agent.mspbots.ai"),
+        ]
+    )
+    assert creds[0] == "garbage"
